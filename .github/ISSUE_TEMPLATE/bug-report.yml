@@ -7,25 +7,27 @@ body:
   - type: markdown
     attributes:
       value: |
-        感谢反馈问题。为了更快定位，请尽量完整填写下面的信息。
+        这是 csszyft 分支的问题入口，目前只验证 Windows 11 / Claude 4.29.0.0 x64 / 第三方 API 模式 / 简体中文。
+        安装步骤：https://github.com/csszyft/claude-desktop-zh-cn/blob/main/docs/windows-overlay.md
+        请只附去除隐私的截图和日志片段，不要上传完整配置、令牌或任务内容。
 
   - type: dropdown
     id: platform
     attributes:
-      label: 平台是啥
-      description: 请选择你使用的平台
+      label: 运行环境
+      description: 其它环境尚未验证，请在问题描述中说明具体版本
       options:
-        - macOS
-        - Windows
-        - 其他
+        - Windows 11
+        - 其它 Windows 版本
+        - 其它系统（尚未支持）
     validations:
       required: true
       
   - type: dropdown
     id: isnew
     attributes:
-      label: 是否使用最新代码
-      description: 没使用最新代码的话先用最新代码试试
+      label: 是否使用本仓库的代码
+      description: 请在问题描述中提供提交编号；安装中断时不要直接换版本重新运行
       options:
         - 是
         - 否
@@ -36,9 +38,23 @@ body:
   - type: input
     id: claude_version
     attributes:
-      label: Clade Desktop版本是多少
-      description: 请填写 Claude Desktop 版本号，例如 0.11.2
-      placeholder: 例如 x.xx.x
+      label: Claude Desktop 版本
+      description: 请填写完整版本号和架构
+      placeholder: 例如 4.29.0.0 x64
+    validations:
+      required: true
+
+  - type: dropdown
+    id: phase
+    attributes:
+      label: 出错阶段
+      options:
+        - prepare（准备副本）
+        - seed（写入缓存）
+        - finish（恢复官方文件）
+        - recover（恢复失败安装）
+        - 安装完成后使用
+        - 卸载缓存
     validations:
       required: true
 

@@ -1,6 +1,6 @@
 # Windows 4.29：保留汉化和 Cowork
 
-这个分支基于 [javaht/claude-desktop-zh-cn](https://github.com/javaht/claude-desktop-zh-cn) 的 1.4.19。原项目负责词库和大部分补丁逻辑，这里补上 Windows 4.29 的菜单、词库兜底，以及 Cowork 签名冲突的处理。
+这是 [csszyft/claude-desktop-zh-cn](https://github.com/csszyft/claude-desktop-zh-cn) 的安装指南。当前只验证 Windows 11、Claude 4.29.0.0 x64、第三方 API 模式和简体中文。先完整阅读，再操作；其它版本不要套用这些计划。
 
 ## 为什么换方案
 
@@ -19,12 +19,22 @@ RPC pipe closed
 
 ## 开始前
 
+- 从本仓库获取代码，不使用旧安装包或上游的一键安装入口。
 - 需要 Windows PowerShell 5.1、Python 3.10+。准备文件约需 3 GB 空间，实际写入需要管理员授权。
 - 先退出 Claude，等已有更新完成，再检查 `Get-AppxPackage -Name Claude`。官网安装器也会部署 MSIX，路径在 `WindowsApps` 不代表从微软商店下载。
 - 当前 EXE 必须有有效官方签名。如果已经装过直接写包的补丁，先恢复对应版本的原始 EXE、`app.asar` 和 `ion-dist.asar`。不要拿修改后的文件当原始备份。
 - 不要重装工作区，也不要删除 `local-agent-mode-sessions`、虚拟磁盘或整个用户目录。
 
 这仍是实验性的分步安装，不是双击后无人值守的安装包。**第二步暂时使用签名失效的 EXE，期间 Cowork 仍不可用；完成第三步才恢复。** 不愿接受这段临时状态的话，先不要使用此方案。
+
+在普通 PowerShell 中克隆本项目：
+
+```powershell
+git clone https://github.com/csszyft/claude-desktop-zh-cn.git
+cd claude-desktop-zh-cn
+```
+
+没有 Git 时，可以[下载本仓库 main 分支源码](https://github.com/csszyft/claude-desktop-zh-cn/archive/refs/heads/main.zip)，解压后在项目目录打开 PowerShell。后续三个阶段请在同一个窗口执行，保留 `$work` 和 `$apply` 变量；窗口关闭后，应指向原来的工作目录继续恢复，不要重新生成计划。
 
 ## 1. 只在副本中准备
 
@@ -44,8 +54,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_windows_ov
 ```powershell
 $apply = (Resolve-Path .\scripts\apply_windows_overlay.ps1).Path
 $plan = Join-Path $work 'seed\plan.json'
-$args = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -PlanPath "{1}"' -f $apply, $plan
-Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList $args -Wait
+$arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -PlanPath "{1}"' -f $apply, $plan
+Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList $arguments -Wait
 Get-Content (Join-Path $work 'seed\result.json')
 ```
 
@@ -61,8 +71,8 @@ Select-String -Path "$env:LOCALAPPDATA\Claude-3p\logs\claude.ai-web.log" -Patter
 
 ```powershell
 $plan = Join-Path $work 'finish\plan.json'
-$args = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -PlanPath "{1}"' -f $apply, $plan
-Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList $args -Wait
+$arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -PlanPath "{1}"' -f $apply, $plan
+Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList $arguments -Wait
 Get-Content (Join-Path $work 'finish\result.json')
 ```
 
@@ -80,10 +90,14 @@ Get-Content (Join-Path $work 'finish\result.json')
 
 若要卸载缓存层，可在 Claude 正常提供的开发者工具中，切到 `app://localhost` 页面对应的 Console，运行 `resources/windows-overlay-remove.js` 的内容。它只注销本补丁命名的 Worker 和缓存，然后手动重载页面。不要为此绕过产品的开发者工具限制，也不要删除整个用户目录。官方中文菜单可按需要保留或切回 English。
 
+无法完成恢复或卸载时，请到[本仓库 Issues](https://github.com/csszyft/claude-desktop-zh-cn/issues) 反馈版本、所处阶段和报错。只附去除隐私的日志片段，不上传工作目录中的 `config.before.json`、完整配置或客户端文件。
+
 ## 已做的验证
 
 最初的真实 4.29 测试保留了原有 39,482 个前端 key，检查了 4,535 个归档条目的完整性和 404 个修改后 JS 的语法。缓存方案额外调整了一处 locale 桥接调用，最终缓存 408 个文件。恢复后，用户确认中文和 Cowork 均可用。
 
 自动测试覆盖缓存文件哈希、API 请求不被拦截、版本失配回退、词库合并和原文件恢复。测试不能替代 MSIX 真机安装；本 fork 没有把“服务进程正在运行”当作“Cowork 任务已跑通”。
 
-相关讨论：[上游 #223](https://github.com/javaht/claude-desktop-zh-cn/issues/223)、[#213](https://github.com/javaht/claude-desktop-zh-cn/issues/213)、[未合并的 #224](https://github.com/javaht/claude-desktop-zh-cn/pull/224)。#224 涉及设备级商店更新策略，本 fork 没有采用。
+## 来源与问题背景
+
+本分支基于 [javaht/claude-desktop-zh-cn](https://github.com/javaht/claude-desktop-zh-cn) 1.4.19 的词库和补丁逻辑继续修改，保留原作者署名和 MIT 许可。以下链接只作问题背景，不是安装入口：[上游 #223](https://github.com/javaht/claude-desktop-zh-cn/issues/223)、[#213](https://github.com/javaht/claude-desktop-zh-cn/issues/213)、[未合并的 #224](https://github.com/javaht/claude-desktop-zh-cn/pull/224)。#224 涉及设备级商店更新策略，本 fork 没有采用。

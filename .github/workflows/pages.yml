@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   deploy:
-    if: github.repository == 'javaht/claude-desktop-zh-cn'
+    if: github.repository == 'csszyft/claude-desktop-zh-cn' && vars.ENABLE_PAGES == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

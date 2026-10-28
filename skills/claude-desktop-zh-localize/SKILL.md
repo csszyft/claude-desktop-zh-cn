@@ -5,6 +5,12 @@ description: 为 claude-desktop-zh-cn 项目补全 Claude Desktop 未汉化界�
 
 # Claude Desktop 中文补丁 · 汉化工作流
 
+## 本分支的安装边界
+
+本 skill 在 `csszyft/claude-desktop-zh-cn` 中用于维护词库，不代表授权安装或重启客户端。实际安装只使用本仓库的 [Windows 4.29 缓存指南](../../docs/windows-overlay.md)，暂限 Windows 11、4.29.0.0 x64、第三方 API 模式和简体中文。保留的 macOS/三地词库示例只用于源码研究，不是本分支的安装方法。
+
+不要因漏翻或 locale 回落而重跑旧的一键安装器，也不要直接修改正在使用的 EXE/ASAR。4.29 的最终程序文件必须恢复官方原样；否则 Cowork 会拒绝签名失效的客户端。新增译文先在副本中验证，重建缓存前先处理已有 Worker，不能覆盖未知根作用域 Worker。
+
 本项目是 Claude Desktop 的本地中文补丁。界面文本通过三层机制汉化，新增翻译时必须按目标文本的性质选择正确的层，三层全部落位后统一验证。
 
 ## 三层汉化机制
@@ -75,11 +81,11 @@ python3 skills/claude-desktop-zh-localize/scripts/verify_mapping.py "Theme" "Pas
 python3 -m py_compile scripts/patch_claude_zh_cn.py scripts/patch_linux_asar.py
 ```
 
-`verify_mapping.py` 默认读 `/Applications/Claude.app`，可用 `CLAUDE_APP=/path/to/Claude.app` 覆盖。需要端到端确认时再跑 `python3 scripts/patch_claude_zh_cn.py --user-home "$HOME" --dry-run`（约 5 分钟，非必需）。
+`verify_mapping.py` 默认读 `/Applications/Claude.app`，可用 `CLAUDE_APP=/path/to/Claude.app` 覆盖。Windows 4.29 的端到端验收按本仓库缓存指南进行，不调用 macOS 安装脚本。
 
 ### 第 6 步：Computer Use 视觉回归验证（可选但推荐）
 
-用户要求"测试页面"、"看看汉化效果"，或批量补词之后需要真机确认时执行：重跑安装脚本把词表打进 `/Applications/Claude.app`，再用 computer-use 逐页截图核对。完整分步手册（含权限前置条件、bootstrap 代码、逐页核对清单、判定标准）见 **`references/computer-use-verification.md`**，执行前必读。
+用户要求测试效果时，先确认缓存安装的 finish 阶段已完成，再用当前环境提供的电脑操作工具核对界面。不要为了截图重新安装补丁。验收清单见 [视觉与功能回归](references/computer-use-verification.md)。
 
 ### 第 7 步：提交
 
@@ -96,7 +102,7 @@ python3 -m py_compile scripts/patch_claude_zh_cn.py scripts/patch_linux_asar.py
 7. **⚠️ 通用单词/数据标识符严禁进硬编码词表**。硬编码替换会命中 JS 源码里该词的**所有**带引号出现，包括数据上下文。真实事故：`"Pin"→固定` 把 `icon:"Pin"` 图标名改成中文（图标全坏）；`"Engineering"→工程` 把 `workFunction:"Engineering"` 服务端数据值和 `Ax=["...",...]` 角色数组改掉，与未替换的 unquoted 对象键 `Engineering:[...]` 失配 → `f["工程"]` undefined → 连接器页崩溃（`TypeError: e is not iterable`）。判定规则：**单词若同时是 (a) 图标/组件名、(b) 服务端数据值、(c) 对象键/switch-case/数组元素，就绝不能进硬编码词表**——改用 react-intl key（frontend-zh-*.json）提供翻译。若已发生污染：在前端 bundle（默认 `ion-dist/assets/v1/*.js`，脚本会自动探测实际目录）中把 `"中文"` 批量还原为英文原词（UI 显示由 intl catalog 提供，不受影响），**不要碰 app.asar（M 映射的键值对是合法的）与 i18n catalog**。
 8. **主进程菜单翻译自 2.9939.2 起改走 desktop 语言包（intl catalog）**：菜单缺失翻译时应用会把 `Missing message: "<id>" ... (default message (英文)) as fallback` 打到 stderr——前台启动应用收集该日志即可拿到完整的未翻译菜单 key 清单（71 个），写入 `desktop-zh-*.json` 后由 `install_desktop_locale` 合并进 `Contents/Resources/zh-CN.json`。
 9. **⚠️ 2.9939.2（Electron 44）两大挂死**：`patch_online_locale_lock`（DesktopIntl 锁，任何形态包括可重入标志位）与菜单运行时补丁都会让主进程在菜单构建后、窗口创建前陷入 JS 深度递归——进程活着但永远无窗口、AX 超时。两者都已加版本门控（`>= 2.9939.2` 跳过注入），新版菜单由 desktop 语言包覆盖。若需诊断：`sample <pid>` 看主线程是否陷入 JS 深度递归（成千层重复栈帧）。
-10. **应用启动时会把 `Claude-3p/config.json` 的 locale 归一化为系统语言**。修 locale 的正确顺序：杀应用 → 改配置 → 启动；运行时改会被回写覆盖。界面整体回退英文时重跑补丁脚本即可。
+10. **应用启动时可能改写 `Claude-3p/config.json` 的 locale**。运行时手工改配置可能被覆盖。界面回退英文时先检查缓存、构建标识和当前包版本，不要直接重跑旧安装器。
 11. **手工 `codesign --force --deep --sign -` 会清空 entitlements**（丢失 `com.apple.security.virtualization`），导致补丁校验失败。必须用补丁自带的 `resign_app`（从原二进制读取并保留授权），或从最近一个由补丁签名的备份恢复。
 
 ## 术语对照表

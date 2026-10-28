@@ -46,7 +46,7 @@ jobs:
               data = json.loads(path.read_text(encoding="utf-8"))
           else:
               path.parent.mkdir(parents=True, exist_ok=True)
-              data = {"repo": "javaht/claude-desktop-zh-cn"}
+              data = {"repo": os.environ["GITHUB_REPOSITORY"]}
           data["repo"] = os.environ["GITHUB_REPOSITORY"]
           data["release"] = version
           path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
