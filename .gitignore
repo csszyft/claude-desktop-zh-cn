@@ -15,3 +15,7 @@ scripts/experimental/runtime/
 
 # Linux 汉化脚本运行时生成的本地备份，不应提交
 resources/.zh-cn-backups-linux/
+
+# Overlay workspaces contain private configs and large copies of installed apps.
+overlay-workspace/
+validation/

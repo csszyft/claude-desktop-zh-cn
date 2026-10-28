@@ -25,7 +25,13 @@ $ErrorActionPreference = 'Stop'
     'Remove-GeneratedFrontendWorkspace',
     'Initialize-FrontendPatchTarget',
     'Complete-FrontendPatchTarget',
-    'Close-FrontendPatchTarget'
+    'Close-FrontendPatchTarget',
+    'Get-LanguageResources',
+    'Merge-TranslationCatalog',
+    'Install-MergedCatalog',
+    'Get-AsarCatalogText',
+    'Install-DesktopCatalog',
+    'Install-LanguageFiles'
 )
 
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('claude-asar-workflow-' + [guid]::NewGuid().ToString('N'))
@@ -43,6 +49,9 @@ try {
     New-Item -ItemType Directory -Path $resources -Force | Out-Null
     [IO.File]::WriteAllText((Join-Path $assets 'index-fixture.js'), 'const x="original";', $utf8NoBom)
     [IO.File]::WriteAllText((Join-Path $i18n 'en-US.json'), '{"hello":"Hello"}', $utf8NoBom)
+    $desktopI18n = Join-Path $source 'resources\i18n'
+    New-Item -ItemType Directory -Path $desktopI18n -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $desktopI18n 'en-US.json'), '{"EfdnINFnIz":"File","newKey":"Keep me"}', $utf8NoBom)
     [IO.File]::WriteAllText((Join-Path $source 'index.html'), '<html></html>', $utf8NoBom)
 
     $ionAsar = Join-Path $resources 'ion-dist.asar'
@@ -81,6 +90,8 @@ try {
             throw 'Original ion-dist.asar was not backed up.'
         }
 
+        Install-LanguageFiles $resources (Get-LanguageResources 'zh-CN') 'zh-CN'
+        if (-not $script:PatchedDesktopAsar) { throw 'Packed desktop catalog was not patched.' }
         [IO.File]::WriteAllText((Join-Path $work 'i18n\zh-CN.json'), '{"hello":"你好"}', $utf8NoBom)
         Complete-FrontendPatchTarget $target
     }
@@ -96,6 +107,18 @@ try {
     $translated = [IO.File]::ReadAllText((Join-Path $verify 'i18n\zh-CN.json'), [Text.Encoding]::UTF8)
     if ($translated -notmatch '你好') {
         throw 'The rebuilt ion-dist.asar does not contain the installed locale.'
+    }
+    $english = Get-Content -LiteralPath (Join-Path $verify 'i18n\en-US.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($english.hello -cne 'Hello' -or @($english.PSObject.Properties).Count -le 1) {
+        throw 'The rebuilt frontend fallback must contain translations and retain current-version keys.'
+    }
+    $data = [IO.File]::ReadAllBytes($appAsar)
+    $parsed = Read-AsarHeader $data $appAsar
+    $menu = Get-AsarCatalogText $data $parsed.HeaderSize $parsed.Header.files.resources.files.i18n.files.'en-US.json' | ConvertFrom-Json
+    if ($menu.EfdnINFnIz -cne ([string][char]0x6587 + [char]0x4ef6) -or $menu.newKey -cne 'Keep me') { throw 'Packed menu catalog merge failed.' }
+    $exeText = [IO.File]::ReadAllText((Join-Path $app 'Claude.exe'))
+    foreach ($archive in @($appAsar, $ionAsar)) {
+        if (-not $exeText.Contains((Get-AsarHeaderHash $archive))) { throw "Stale EXE hash: $archive" }
     }
 
     Write-Host 'PASS: ASAR install workflow backs up, expands, rebuilds, verifies, and cleans up.' -ForegroundColor Green

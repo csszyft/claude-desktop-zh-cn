@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   deploy:
+    if: github.repository == 'javaht/claude-desktop-zh-cn'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

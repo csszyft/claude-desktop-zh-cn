@@ -37,6 +37,7 @@ jobs:
           ./tests/Test-AsarFrontend.ps1
           ./tests/Test-AsarIntegrity.ps1
           ./tests/Test-AsarFrontendWorkflow.ps1
+          ./tests/Test-I18nCatalogs.ps1
       - name: PowerShell 7 跨平台测试
         if: runner.os == 'Linux'
         shell: pwsh

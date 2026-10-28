@@ -1,7 +1,7 @@
 ﻿# 本汉化包只处理第三方 API 模式。Claude 官方已原生支持简体/繁体中文界面，
-# 在线账号模式的中文化交给官方实现。Windows 不修改 app.asar；Claude 4.29+
-# 将前端放进 ion-dist.asar 时，必须重建该包并同步 Claude.exe 内嵌的 ASAR
-# 头哈希，因此这种新布局下 Claude.exe 的 Authenticode 签名会失效。
+# 在线账号页面的中文化交给官方实现。新版的菜单词库位于 app.asar 内，
+# 只更新其中的 i18n JSON，不注入主进程 JS。修改 ASAR 后同步 Claude.exe
+# 内嵌的头哈希，因此这种布局下原始 Authenticode 签名会失效。
 param(
     [switch]$Interactive,
 
@@ -124,7 +124,7 @@ Test-GitHubReleaseUpdate
 function Read-InteractiveSelection {
     Write-Host "=== Claude Desktop Windows 中文补丁 ==="
     Write-Host ""
-    Write-Host "[1] 安装中文补丁（第三方 API 模式，例如 DeepSeek；不会改动 app.asar）"
+    Write-Host "[1] 安装中文补丁（第三方 API 模式，例如 DeepSeek；含原生菜单词库）"
     Write-Host "    官方账号登录界面已由 Claude 原生提供中文，无需本补丁。"
     Write-Host "[2] 恢复原样 / 卸载补丁"
     Write-Host "[3] 自动更新设置（y=禁止自动更新，n=允许自动更新）"
@@ -442,6 +442,7 @@ function Get-ClaudeConfigPaths {
     }
 
     $configPaths = @()
+    $configPaths += Join-Path $env:LOCALAPPDATA "Claude-3p\config.json"
     if ($env:APPDATA) {
         $configPaths += Join-Path $env:APPDATA "Claude\config.json"
         $configPaths += Join-Path $env:APPDATA "Claude-3p\config.json"
@@ -468,6 +469,7 @@ function Get-ClaudeConfigPaths {
         $packagePath = Join-Path (Join-Path $env:LOCALAPPDATA "Packages") $packageName
         $configPaths += Join-Path $packagePath "LocalCache\Roaming\Claude\config.json"
         $configPaths += Join-Path $packagePath "LocalCache\Roaming\Claude-3p\config.json"
+        $configPaths += Join-Path $packagePath "LocalCache\Local\Claude-3p\config.json"
     }
 
     return @($configPaths | Select-Object -Unique)
@@ -685,6 +687,7 @@ function Enable-WriteAccess {
     $paths = @(
         (Get-ClaudeAppPathFromResources $ResourcesPath),
         $ResourcesPath,
+        (Join-Path $ResourcesPath "app.asar"),
         (Join-Path $ResourcesPath "ion-dist.asar"),
         (Join-Path $ResourcesPath "ion-dist"),
         (Join-Path $ResourcesPath "ion-dist\i18n"),
@@ -699,6 +702,156 @@ function Enable-WriteAccess {
     }
 }
 
+function Merge-TranslationCatalog {
+    param(
+        [string]$EnglishJson,
+        [string]$TranslationPath,
+        [string]$FallbackPairsPath = ""
+    )
+
+    $english = ConvertFrom-Json -InputObject $EnglishJson
+    $translated = Get-Content -LiteralPath $TranslationPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($english -isnot [pscustomobject] -or $translated -isnot [pscustomobject]) {
+        throw "Expected JSON objects for translation catalogs: $TranslationPath"
+    }
+    $merged = [Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+    foreach ($property in $english.PSObject.Properties) { $merged[$property.Name] = $property.Value }
+    foreach ($property in $translated.PSObject.Properties) { $merged[$property.Name] = $property.Value }
+
+    # Exact, full-message matches only: never run JS/code replacements on JSON text.
+    if ($FallbackPairsPath) {
+        $pairs = Get-Content -LiteralPath $FallbackPairsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $lookup = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+        foreach ($pair in $pairs) {
+            if ($pair.Count -ne 2) { throw "Invalid translation pair: $FallbackPairsPath" }
+            if (-not $lookup.ContainsKey([string]$pair[0])) { $lookup[[string]$pair[0]] = [string]$pair[1] }
+        }
+        foreach ($property in $english.PSObject.Properties) {
+            if ($property.Value -is [string] -and $merged[$property.Name] -ceq $property.Value -and
+                $lookup.ContainsKey($property.Value)) {
+                $merged[$property.Name] = $lookup[$property.Value]
+            }
+        }
+    }
+    return ConvertTo-Json -InputObject $merged -Depth 100 -Compress
+}
+
+function Install-MergedCatalog {
+    param(
+        [string]$ResourcesPath,
+        [string]$Directory,
+        [string]$TranslationPath,
+        [string]$Lang,
+        [string]$FallbackPairsPath = ""
+    )
+
+    $englishPath = Join-Path $Directory "en-US.json"
+    Require-File $englishPath
+    Backup-ModifiedFile $ResourcesPath $englishPath
+    $original = Join-Path (New-BackupSet $ResourcesPath) (Get-RelativeResourcePath $ResourcesPath $englishPath)
+    # Expanded frontend files are covered by the archive backup, not individual files.
+    if (-not (Test-Path -LiteralPath $original)) { $original = $englishPath }
+    $json = Merge-TranslationCatalog ([IO.File]::ReadAllText($original, [Text.Encoding]::UTF8)) $TranslationPath $FallbackPairsPath
+    $localePath = Join-Path $Directory "$Lang.json"
+    Backup-ModifiedFile $ResourcesPath $localePath
+    [IO.File]::WriteAllText($localePath, $json, $Utf8NoBom)
+    [IO.File]::WriteAllText($englishPath, $json, $Utf8NoBom)
+    Write-Host "  installed $Lang and en-US fallback: $Directory" -ForegroundColor Green
+}
+
+function Get-AsarCatalogText {
+    param([byte[]]$Data, [int]$HeaderSize, $Entry)
+
+    if ($null -eq $Entry -or $Entry.PSObject.Properties['unpacked'] -or
+        $Entry.PSObject.Properties['link'] -or -not $Entry.PSObject.Properties['offset']) {
+        throw "Expected a packed ASAR catalog entry."
+    }
+    $offset = [int64]$Entry.offset
+    $size = [int64]$Entry.size
+    $start = 8L + $HeaderSize + $offset
+    if ($offset -lt 0 -or $size -lt 0 -or $start -gt $Data.LongLength -or $size -gt ($Data.LongLength - $start)) {
+        throw "Invalid ASAR catalog bounds."
+    }
+    return [Text.Encoding]::UTF8.GetString($Data, [int]$start, [int]$size)
+}
+
+function Install-DesktopCatalog {
+    param([string]$ResourcesPath, [string]$TranslationPath, [string]$Lang)
+
+    $asarPath = Join-Path $ResourcesPath "app.asar"
+    $parsed = Read-AsarHeaderFromFile $asarPath
+    $catalogs = $parsed.Header.files.resources.files.i18n.files
+    if ($null -eq $catalogs -or -not $catalogs.PSObject.Properties['en-US.json']) {
+        Install-MergedCatalog $ResourcesPath $ResourcesPath $TranslationPath $Lang
+        return $false
+    }
+
+    Backup-ModifiedFile $ResourcesPath $asarPath
+    $original = Join-Path (New-BackupSet $ResourcesPath) "app.asar"
+    $data = [IO.File]::ReadAllBytes($original)
+    $parsed = Read-AsarHeader $data $original
+    $catalogs = $parsed.Header.files.resources.files.i18n.files
+    $english = Get-AsarCatalogText $data $parsed.HeaderSize $catalogs.'en-US.json'
+    $json = Merge-TranslationCatalog $english $TranslationPath
+    $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+    $payloadStart = 8 + $parsed.HeaderSize
+    $offset = [int64]($data.Length - $payloadStart)
+    $temporary = $asarPath + ".zh-cn-catalog-" + [guid]::NewGuid().ToString('N')
+    try {
+        # Keep all original payloads and metadata, including native unpacked modules.
+        # Only the two catalog entries point to the appended translation payload.
+        $hash = Get-Sha256Hex $bytes
+        $blocks = @()
+        for ($i = 0; $i -lt $bytes.Length; $i += $AsarIntegrityBlockSize) {
+            $length = [Math]::Min($AsarIntegrityBlockSize, $bytes.Length - $i)
+            $block = [byte[]]::new($length)
+            [Array]::Copy($bytes, $i, $block, 0, $length)
+            $blocks += Get-Sha256Hex $block
+        }
+        foreach ($name in @('en-US.json', "$Lang.json")) {
+            $entry = [pscustomobject]@{
+                size = $bytes.Length
+                offset = [string]$offset
+                integrity = [pscustomobject]@{
+                    algorithm = 'SHA256'; hash = $hash; blockSize = $AsarIntegrityBlockSize; blocks = @($blocks)
+                }
+            }
+            $catalogs | Add-Member -NotePropertyName $name -NotePropertyValue $entry -Force
+            $offset += $bytes.Length
+        }
+        $headerBytes = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $parsed.Header -Depth 100 -Compress))
+        $payloadSize = Align-4 (4 + $headerBytes.Length)
+        $headerSize = 4 + $payloadSize
+        $prefix = [byte[]]::new(8 + $headerSize)
+        [Array]::Copy([BitConverter]::GetBytes([uint32]4), 0, $prefix, 0, 4)
+        [Array]::Copy([BitConverter]::GetBytes([uint32]$headerSize), 0, $prefix, 4, 4)
+        [Array]::Copy([BitConverter]::GetBytes([uint32]$payloadSize), 0, $prefix, 8, 4)
+        [Array]::Copy([BitConverter]::GetBytes([uint32]$headerBytes.Length), 0, $prefix, 12, 4)
+        [Array]::Copy($headerBytes, 0, $prefix, 16, $headerBytes.Length)
+        $output = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
+        try {
+            $output.Write($prefix, 0, $prefix.Length)
+            $output.Write($data, $payloadStart, $data.Length - $payloadStart)
+            $output.Write($bytes, 0, $bytes.Length)
+            $output.Write($bytes, 0, $bytes.Length)
+        }
+        finally { $output.Dispose() }
+        $verify = [IO.File]::ReadAllBytes($temporary)
+        $verified = Read-AsarHeader $verify $temporary
+        foreach ($name in @('en-US.json', "$Lang.json")) {
+            $entry = $verified.Header.files.resources.files.i18n.files.$name
+            if ((Get-AsarCatalogText $verify $verified.HeaderSize $entry) -cne $json) {
+                throw "ASAR catalog verification failed: $name"
+            }
+        }
+        Move-Item -LiteralPath $temporary -Destination $asarPath -Force
+    }
+    finally { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
+    Sync-ClaudeExeAsarIntegrity $ResourcesPath
+    Write-Host "  installed app.asar menu catalogs ($Lang / en-US)" -ForegroundColor Green
+    return $true
+}
+
 function Install-LanguageFiles {
     param(
         [string]$ResourcesPath,
@@ -711,11 +864,8 @@ function Install-LanguageFiles {
     New-Item -ItemType Directory -Path $i18nDir -Force | Out-Null
     New-Item -ItemType Directory -Path $statsigDir -Force | Out-Null
 
-    Copy-Item $Pack["Frontend"] (Join-Path $i18nDir "$Lang.json") -Force
-    Write-Host "  installed ion-dist/i18n/$Lang.json" -ForegroundColor Green
-
-    Copy-Item $Pack["Desktop"] (Join-Path $ResourcesPath "$Lang.json") -Force
-    Write-Host "  installed resources/$Lang.json" -ForegroundColor Green
+    Install-MergedCatalog $ResourcesPath $i18nDir $Pack["Frontend"] $Lang $Pack["FrontendHardcoded"]
+    $script:PatchedDesktopAsar = Install-DesktopCatalog $ResourcesPath $Pack["Desktop"] $Lang
 
     Copy-Item $Pack["Statsig"] (Join-Path $statsigDir "$Lang.json") -Force
     Write-Host "  installed ion-dist/i18n/statsig/$Lang.json" -ForegroundColor Green
@@ -2015,7 +2165,7 @@ function Set-ClaudeLocale {
         $config = [pscustomobject]@{}
         if (Test-Path $configPath) {
             try {
-                $loaded = Get-Content $configPath -Raw | ConvertFrom-Json
+                $loaded = Get-Content $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
                 if ($loaded) {
                     $config = $loaded
                 }
@@ -3055,6 +3205,7 @@ function Restart-Claude {
 }
 
 function Install-WindowsLanguagePack {
+    Assert-LegacyWindowsInstallSupported
     $label = Get-LanguageLabel $LanguageCode
 
     # 单实例互斥锁：防止多个安装进程并发写入 Claude 资源
@@ -3123,8 +3274,8 @@ function Install-WindowsLanguagePack {
 
         Write-Host ""
         Write-Host "安装完成。如果界面未立即切换，请在 Language 中选择 $label。" -ForegroundColor Green
-        if ($usedAsarFrontend) {
-            Write-Host "提示：Claude 4.29+ 将前端打包为 ion-dist.asar；安装器已更新其完整性哈希，Claude.exe 的原始 Authenticode 签名会失效。" -ForegroundColor DarkYellow
+        if ($usedAsarFrontend -or $script:PatchedDesktopAsar) {
+            Write-Host "提示：安装器已更新 ASAR 词库及完整性哈希，Claude.exe 的原始 Authenticode 签名会失效；卸载可恢复备份。" -ForegroundColor DarkYellow
         }
         else {
             Write-Host "提示：本补丁不改动 app.asar / Claude.exe，官方账号登录界面请直接使用 Claude 自带的语言设置。" -ForegroundColor DarkGray
@@ -3225,7 +3376,16 @@ function Remove-LegacyFridaResident {
     }
 }
 
+function Assert-LegacyWindowsInstallSupported {
+    $paths = Get-ClaudeResourcesPath
+    if ((Get-FrontendBundleMode $paths.Resources) -eq 'Asar') {
+        throw 'Claude 4.29+ 的直接写包汉化会破坏 EXE 签名并导致 Cowork RPC pipe closed。本 fork 已停用此安装路径。请阅读 docs/windows-overlay.md，使用分步缓存方案；不要重复运行旧安装器。'
+    }
+}
+
 function Invoke-PreInstallCleanup {
+    # Check before restoring backups or stopping Claude, including interactive cleanup.
+    Assert-LegacyWindowsInstallSupported
     if ($script:PreInstallCleanupDone) {
         return
     }
